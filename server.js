@@ -2,8 +2,9 @@ const http = require('http');
 const url  = require('url');
 
 /* ── CONFIG ── */
-const PORT   = process.env.PORT || 3000;
-const SECRET = process.env.TV_SECRET || 'battery2026';
+const PORT        = process.env.PORT || 3000;
+const SECRET      = process.env.TV_SECRET || 'battery2026';
+const TZ_OFFSET_H = parseInt(process.env.TZ_OFFSET || '1'); // UTC+1 by default
 
 /* ── CANDLE STORE ── */
 const candleStore = new Map();
@@ -20,6 +21,24 @@ function storeCandle(symbol, tf, candle) {
   } else {
     arr.push(candle);
     if (arr.length > MAX_CANDLES) arr.shift();
+  }
+}
+
+/* ── ADJUST TIMESTAMP TO LOCAL TZ ── */
+function adjustTime(timeStr) {
+  const ms = parseInt(timeStr);
+  if (!isNaN(ms) && ms > 1000000000000) {
+    // Unix ms timestamp — add offset
+    const adjusted = new Date(ms + TZ_OFFSET_H * 3600 * 1000);
+    return adjusted.toISOString().replace('T', ' ').replace('.000Z', '');
+  }
+  // ISO string — parse and add offset
+  try {
+    const d = new Date(timeStr);
+    const adjusted = new Date(d.getTime() + TZ_OFFSET_H * 3600 * 1000);
+    return adjusted.toISOString().replace('T', ' ').replace('.000Z', '');
+  } catch(e) {
+    return timeStr;
   }
 }
 
@@ -64,7 +83,7 @@ const server = http.createServer((req, res) => {
         }
 
         const candle = {
-          time:  String(time),
+          time:  adjustTime(String(time)),
           open:  parseFloat(open),
           high:  parseFloat(high),
           low:   parseFloat(low),
@@ -78,6 +97,7 @@ const server = http.createServer((req, res) => {
         res.end(JSON.stringify({ ok: true, stored: candle }));
 
       } catch (e) {
+        console.log(`[ERROR] ${e.message}`);
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Invalid JSON' }));
       }
@@ -112,5 +132,5 @@ const server = http.createServer((req, res) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`Server running on port ${PORT} — secret: ${SECRET}`);
+  console.log(`Server running on port ${PORT} — secret: ${SECRET} — TZ offset: UTC+${TZ_OFFSET_H}`);
 });
