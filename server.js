@@ -3,10 +3,9 @@ const url  = require('url');
 
 /* ── CONFIG ── */
 const PORT   = process.env.PORT || 3000;
-const SECRET = process.env.TV_SECRET || 'battery2026'; // match this in Pine Script
+const SECRET = process.env.TV_SECRET || 'battery2026';
 
 /* ── CANDLE STORE ── */
-// Keeps the last 20 candles per symbol+timeframe key
 const candleStore = new Map();
 const MAX_CANDLES = 50;
 
@@ -16,9 +15,8 @@ function storeCandle(symbol, tf, candle) {
   const key = storeKey(symbol, tf);
   if (!candleStore.has(key)) candleStore.set(key, []);
   const arr = candleStore.get(key);
-  // avoid duplicate timestamps
   if (arr.length && arr[arr.length - 1].time === candle.time) {
-    arr[arr.length - 1] = candle; // update last
+    arr[arr.length - 1] = candle;
   } else {
     arr.push(candle);
     if (arr.length > MAX_CANDLES) arr.shift();
@@ -35,35 +33,33 @@ function setCORS(res) {
 /* ── SERVER ── */
 const server = http.createServer((req, res) => {
   setCORS(res);
-
   const parsed   = url.parse(req.url, true);
   const pathname = parsed.pathname;
 
-  /* preflight */
   if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
 
-  /* ── POST /webhook  — TradingView sends candle data here ── */
+  /* ── POST /webhook ── */
   if (req.method === 'POST' && pathname === '/webhook') {
-    const secret = req.headers['x-secret'] || parsed.query.secret;
-    if (secret !== SECRET) {
-      res.writeHead(403, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Forbidden' }));
-      return;
-    }
-
     let body = '';
     req.on('data', chunk => { body += chunk; });
     req.on('end', () => {
       try {
         const data = JSON.parse(body);
 
-        // Expected payload from Pine Script:
-        // { symbol, tf, time, open, high, low, close }
+        // Accept secret from body, header, or query param
+        const secret = data.secret || req.headers['x-secret'] || parsed.query.secret;
+        if (secret !== SECRET) {
+          console.log(`[AUTH FAIL] received="${secret}" expected="${SECRET}"`);
+          res.writeHead(403, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Forbidden' }));
+          return;
+        }
+
         const { symbol, tf, time, open, high, low, close } = data;
 
         if (!symbol || !tf || !time || open == null || high == null || low == null || close == null) {
           res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Missing fields', required: ['symbol','tf','time','open','high','low','close'] }));
+          res.end(JSON.stringify({ error: 'Missing fields' }));
           return;
         }
 
@@ -76,8 +72,7 @@ const server = http.createServer((req, res) => {
         };
 
         storeCandle(symbol.toUpperCase(), tf, candle);
-
-        console.log(`[${new Date().toISOString()}] CANDLE  ${symbol} ${tf}  O:${candle.open} H:${candle.high} L:${candle.low} C:${candle.close}  @ ${candle.time}`);
+        console.log(`[CANDLE] ${symbol} ${tf} O:${candle.open} H:${candle.high} L:${candle.low} C:${candle.close} @ ${candle.time}`);
 
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true, stored: candle }));
@@ -90,20 +85,17 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  /* ── GET /candles?symbol=ETHUSDC&tf=15min ── */
-  /* HTML detector polls this to get latest candles */
+  /* ── GET /candles ── */
   if (req.method === 'GET' && pathname === '/candles') {
-    const symbol = (parsed.query.symbol || '').toUpperCase();
-    const tf     = parsed.query.tf || '';
-    const key    = storeKey(symbol, tf);
-    const candles = candleStore.get(key) || [];
-
+    const symbol  = (parsed.query.symbol || '').toUpperCase();
+    const tf      = parsed.query.tf || '';
+    const candles = candleStore.get(storeKey(symbol, tf)) || [];
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ symbol, tf, count: candles.length, candles }));
     return;
   }
 
-  /* ── GET /status — health check ── */
+  /* ── GET /status ── */
   if (req.method === 'GET' && pathname === '/status') {
     const keys = [...candleStore.keys()].map(k => ({
       key: k,
@@ -115,22 +107,10 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  /* ── 404 ── */
   res.writeHead(404, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({ error: 'Not found' }));
 });
 
 server.listen(PORT, () => {
-  console.log(`
-╔══════════════════════════════════════════╗
-║   Battery Formation — Webhook Receiver   ║
-║   Listening on port ${String(PORT).padEnd(21)}║
-╚══════════════════════════════════════════╝
-
-  POST /webhook      ← TradingView sends candles here
-  GET  /candles      ← HTML detector reads candles here
-  GET  /status       ← Health check
-
-  Secret key: ${SECRET}
-`);
+  console.log(`Server running on port ${PORT} — secret: ${SECRET}`);
 });
